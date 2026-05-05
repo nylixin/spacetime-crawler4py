@@ -367,6 +367,10 @@ def is_valid(url):
         if "doku.php" in parsed.path.lower():
             return False
 
+        # Blocking genealogy due to low information
+        if "genealogy" in parsed.path.lower():
+            return False
+
         # Blocking numeric ID expansion traps 
         if re.search(r":\d{4,}", parsed.path):
             return False
