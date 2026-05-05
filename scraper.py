@@ -290,7 +290,7 @@ def is_valid(url):
         hostname = parsed.netloc.lower()
         query    = unquote(parsed.query)
 
-        # ── Domain whitelist ──────────────────────────────────────────────
+        # Domain Whitelist
         allowed = (
             re.search(r"(^|\.)ics\.uci\.edu$",         hostname) or
             re.search(r"(^|\.)cs\.uci\.edu$",           hostname) or
@@ -302,15 +302,15 @@ def is_valid(url):
         if not allowed:
             return False
 
-        # ── Block all query params on .php paths (dynamic trap pages) ────
+        # Filtering out dynamic trap pages by blocking query parameters on .php pages
         if parsed.path.lower().endswith(".php") and query:
             return False
 
-        # ── Block URLs with semicolons in query (Apache sort, etc.) ──────
+        # Blocking URLs with semicolons in the query 
         if ";" in query:
             return False
 
-        # ── UI-state / dashboard parameter traps ─────────────────────────
+        # Blocking UI State / Dashboard parameter traps 
         if query and any(p in query for p in (
             "filter[", "action=", "skin=", "lang=",
             "from=now", "to=now", "refresh=", "orgId=", "var-",
@@ -319,13 +319,13 @@ def is_valid(url):
         )):
             return False
 
-        # ── Block Trac timeline (infinite timestamp-based pagination) ─────
+        # Blocking Infinite pagination through timestamps 
         if re.search(r"(^|&)from=\d{4}-\d{2}-\d{2}T", query):
             return False
         if "/timeline" in parsed.path and parsed.query:
             return False
 
-        # ── Event list/export trap URLs ───────────────────────────────────
+        # Blocking Event URLs
         if "eventDisplay=" in query:
             return False
         if "ical" in query or "outlook-ical" in query:
@@ -333,62 +333,62 @@ def is_valid(url):
         if "/events/" in parsed.path:
             return False
 
-        # ── Numeric ID enumeration trap ───────────────────────────────────
+        # Blocking Numeric ID enumeration traps
         if re.search(r"^id=\d+$", query):
             return False
 
-        # ── Block non-content subdomains ──────────────────────────────────
+        # Blocking non-content subdomains 
         if re.search(r"(intranet|grafana|observium|kibana|mailman|gitlab)\.ics\.uci\.edu", hostname):
             return False
         if "mailman" in hostname or "pipermail" in parsed.path.lower():
             return False
 
-        # ── Block fano /ca/rules/ enumeration trap ────────────────────────
+        # Blocking fano's ca/rules enum trap 
         if hostname == "fano.ics.uci.edu" and parsed.path.startswith("/ca/rules"):
             return False
 
-        # ── Block numeric publication page expansions ─────────────────────
+        # Blocking numeric publication page expansions 
         if re.search(r"/publications/r\d+[a-z]?\.html?$", parsed.path, re.IGNORECASE):
             return False
 
-        # ── Block login / auth pages ──────────────────────────────────────
+        # Blocking login / auth pages 
         if re.search(r"/(login|logout|signin|signout|wp-login|auth|oauth|sso|cas|admin|account|my-account)(\.php)?(/|$|\?)", parsed.path, re.IGNORECASE):
             return False
 
-        # ── Block wiki.ics.uci.edu entirely when it has query params ────────
+        # Blocking wiki wwhen it has query params 
         if hostname == "wiki.ics.uci.edu" and parsed.query:
             return False
 
-        # ── Block RSS/Atom feed URLs ──────────────────────────────────────
+        # Blocking RSS/Atom feed URLs
         if re.search(r"/(feed|rss|atom)(\.xml)?(/|$)", parsed.path, re.IGNORECASE):
             return False
 
-        # ── Block DokuWiki trap (infinite param combinations) ─────────────
+        # Blocking Doku PHP
         if "doku.php" in parsed.path.lower():
             return False
 
-        # ── Block numeric ID expansion traps (e.g. dtr:105339) ───────────
+        # Blocking numeric ID expansion traps 
         if re.search(r":\d{4,}", parsed.path):
             return False
 
-        # ── Low-value path patterns ───────────────────────────────────────
+        # Blocking low value paths 
         if re.search(
             r"/(archive|deprecated|legacy|backup|old|tmp|temp|test|dev|staging|cache|trash|junk)/",
             parsed.path, re.IGNORECASE
         ):
             return False
 
-        # ── Skip old year-based archive paths (pre-2020) ──────────────────
+        # Skipping archival links (<2020)
         if re.search(r"/(200\d|201\d)/", parsed.path):
             return False
-        # Catch seasonal year paths: spring-05, fall-2007, winter-2016, etc.
+        # Blocking seasonal paths: spring-05, fall-2007, winter-2016, etc.
         if re.search(r"/(spring|summer|fall|winter)[-_](9[0-9]|0[0-9]|1[0-9]|200\d|201\d)\b", parsed.path, re.IGNORECASE):
             return False
-        # Catch reversed seasonal year paths: 05-spring, 2007-fall, 2016-winter, etc.
+        # Blocking seasonal paths reversed: 05-spring, 2007-fall, 2016-winter, etc.
         if re.search(r"/(0[0-9]|9[0-9]|1[0-9]|200\d|201\d)[-_](spring|summer|fall|winter)\b", parsed.path, re.IGNORECASE):
             return False
 
-        # ── Trap detection ────────────────────────────────────────────────
+        # Detecting traps
         if _is_calendar_trap(url):
             return False
         if _has_repeated_path_segments(parsed):
@@ -400,11 +400,11 @@ def is_valid(url):
         if _has_too_many_params(parsed):
             return False
 
-        # ── Block archive.ics.uci.edu search/filter pages ────────────────
+        # Blocking UCI Archive
         if hostname == "archive.ics.uci.edu" and parsed.path.startswith("/datasets") and parsed.query:
             return False
 
-        # ── Block non-HTML file extensions ────────────────────────────────
+        # Blocking non HTML pages
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
             r"|png|tiff?|mid|mp2|mp3|mp4"
@@ -422,11 +422,12 @@ def is_valid(url):
         return False
 
 
-# ─── Report Generator ────────────────────────────────────────────────────────
+# Report Generator
 def generate_report(output_path="report.txt"):
     """
-    Call this after your crawl completes to produce the written report.
-    Example:  from scraper import generate_report; generate_report()
+    Call using
+        from scraper import generate_report; generate_report()
+    after crawl is complete. 
     """
     stats = _load_stats()
 
