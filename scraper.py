@@ -6,10 +6,10 @@ from collections import defaultdict
 from urllib.parse import urlparse, urljoin, urldefrag, urlencode, parse_qsl, unquote
 from bs4 import BeautifulSoup
 
-# ─── Constants ───────────────────────────────────────────────────────────────
+# constant
 STATS_FILE = "crawler_stats.json"
 
-# English stop words (common words to ignore in frequency analysis)
+# Filtering out stop words
 STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "been", "but", "by",
     "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his",
@@ -47,7 +47,7 @@ def _save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(data, f)
 
-# ─── Tokenizer (adapted from your PartA implementation) ─────────────────────
+# Tokenizer 
 def tokenize_text(text: str) -> list:
     """Tokenize a raw string (not a file path) into lowercase alphanumeric tokens."""
     tokens = []
@@ -69,7 +69,7 @@ def compute_word_frequencies(tokens: list) -> dict:
         frequencies[token] = frequencies.get(token, 0) + 1
     return frequencies
 
-# ─── Near-Duplicate Detection ────────────────────────────────────────────────
+# Detecting near duplicates
 _seen_fingerprints = set()
 
 def _simhash(tokens: list) -> int:
@@ -92,7 +92,7 @@ def _is_near_duplicate(fingerprint: int, threshold: int = 3) -> bool:
             return True
     return False
 
-# ─── URL Canonicalization ────────────────────────────────────────────────────
+# URL canonicalization for Defragmenting 
 def _canonicalize(url: str) -> str:
     url, _ = urldefrag(url)
     p = urlparse(url)
@@ -106,7 +106,8 @@ def _canonicalize(url: str) -> str:
     query = urlencode(sorted(parse_qsl(p.query))) if p.query else ""
     return f"{scheme}://{host}{path}" + (f"?{query}" if query else "")
 
-# ─── Trap / Low-Quality Detection ────────────────────────────────────────────
+# Trap and Low Info Detection
+# Calendar, Repeating Paths, Session ID Identifiers, Path Depth, Parameter Limiter, Content Length, 
 def _has_low_info_content(soup, min_words=25) -> bool:
     """Return True if the page has too little textual content to be worth indexing."""
     text = soup.get_text(separator=" ")
@@ -180,14 +181,14 @@ def _check_content_length(resp) -> bool:
     
     return True
 
-# ─── Core Scraper ────────────────────────────────────────────────────────────
+# Run Scraper
 def scraper(url, resp):
     links = extract_next_links(url, resp)
     return [link for link in links if is_valid(link)]
 
 
 def extract_next_links(url, resp):
-    # ── Bail out on bad responses ──────────────────────────────────────────
+    # Pass Bad Response Pages
     if resp.status != 200 or resp.raw_response is None:
         return []
 
@@ -201,11 +202,11 @@ def extract_next_links(url, resp):
     if len(content) > 10 * 1024 * 1024:            # skip files > 10 MB
         return []
 
-    # ── Check for content-length mismatches (truncated responses) ──────────
+    # Truncated Response Pass
     if not _check_content_length(resp):
         return []
 
-    # ── Parse HTML ────────────────────────────────────────────────────────
+    # HTML Parsing with BeautifulSoup
     try:
         soup = BeautifulSoup(content, "lxml")
     except Exception:
@@ -214,39 +215,39 @@ def extract_next_links(url, resp):
         except Exception:
             return []
 
-    # ── Canonicalize URL ──────────────────────────────────────────────────
+    # Calling Canonicalize
     canonical_url = _canonicalize(url)
 
-    # ── Near-duplicate detection via SimHash ──────────────────────────────
+    # SimHash Near Duplication Function
     raw_text = soup.get_text(separator=" ")
     tokens   = tokenize_text(raw_text)
     fingerprint = _simhash(tokens)
     is_duplicate = _is_near_duplicate(fingerprint)
     _seen_fingerprints.add(fingerprint)
 
-    # ── Skip low-info and duplicate pages entirely ────────────────────────
+    # Skipping Duplicate and Low Info Pages
     if is_duplicate or _has_low_info_content(soup):
         return []
 
-    # ── Update persistent stats ───────────────────────────────────────────
+    # Persistent Stat Updater
     stats = _load_stats()
 
-    # 1. Unique pages
+    # 1. Adding Unique Pages
     stats["unique_pages"].add(canonical_url)
 
-    # 2. Word frequencies (for top-50 report)
+    # 2. Word Frequencies
     for token in tokens:
         if token not in STOP_WORDS and len(token) > 1:
             stats["word_frequencies"][token] = (
                 stats["word_frequencies"].get(token, 0) + 1
             )
 
-    # 3. Longest page
+    # 3. Finding Longest Page
     word_count = len(tokens)
     if word_count > stats["longest_page"]["count"]:
         stats["longest_page"] = {"url": canonical_url, "count": word_count}
 
-    # 4. Subdomains  (only *.uci.edu)
+    # 4. Checking SubDomains for UCI
     parsed_url = urlparse(canonical_url)
     hostname   = parsed_url.netloc.lower()
     if hostname.endswith(".uci.edu"):
@@ -258,7 +259,7 @@ def extract_next_links(url, resp):
 
     _save_stats(stats)
 
-    # ── Extract outbound links ────────────────────────────────────────────
+    # Extracting Outbound Links
     extracted = []
     for tag in soup.find_all("a", href=True):
         href = tag["href"].strip()
@@ -273,7 +274,7 @@ def extract_next_links(url, resp):
     return extracted
 
 
-# ─── URL Validator ───────────────────────────────────────────────────────────
+# URL Validator 
 def is_valid(url):
     try:
         parsed = urlparse(url)
@@ -282,7 +283,7 @@ def is_valid(url):
         if parsed.scheme not in {"http", "https"}:
             return False
 
-        # Block excessively long URLs (trap indicator)
+        # Blocking Long URLS
         if len(url) > 200:
             return False
 
