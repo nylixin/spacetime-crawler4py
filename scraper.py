@@ -1,14 +1,13 @@
 import re
-import shelve
-import atexit
-import signal
-import sys
+import json
+import os
+import hashlib
 from collections import defaultdict
-from urllib.parse import urlparse, urljoin, urldefrag
+from urllib.parse import urlparse, urljoin, urldefrag, urlencode, parse_qsl, unquote
 from bs4 import BeautifulSoup
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-STATS_FILE = "crawler_stats.shelve"
+STATS_FILE = "crawler_stats.json"
 
 # English stop words (common words to ignore in frequency analysis)
 STOP_WORDS = {
@@ -25,22 +24,32 @@ STOP_WORDS = {
 }
 
 def _load_stats():
-    with shelve.open(STATS_FILE) as db:
+    if not os.path.exists(STATS_FILE):
         return {
-            "unique_pages":    set(db.get("unique_pages", set())),
-            "word_frequencies": dict(db.get("word_frequencies", {})),
-            "longest_page":    db.get("longest_page", {"url": "", "count": 0}),
-            "subdomains":      dict(db.get("subdomains", {})),
+            "unique_pages":     set(),
+            "word_frequencies": {},
+            "longest_page":     {"url": "", "count": 0},
+            "subdomains":       {},
         }
+    with open(STATS_FILE, "r") as f:
+        data = json.load(f)
+    data["unique_pages"] = set(data["unique_pages"])
+    data["subdomains"]   = {k: set(v) for k, v in data["subdomains"].items()}
+    return data
 
 def _save_stats(stats):
-    with shelve.open(STATS_FILE) as db:
-        db["unique_pages"]     = stats["unique_pages"]
-        db["word_frequencies"] = stats["word_frequencies"]
-        db["longest_page"]     = stats["longest_page"]
-        db["subdomains"]       = stats["subdomains"]
+    data = {
+        "unique_pages":     list(stats["unique_pages"]),
+        "word_frequencies": stats["word_frequencies"],
+        "longest_page":     stats["longest_page"],
+        "subdomains":       {k: list(v) for k, v in stats["subdomains"].items()},
+    }
+    with open(STATS_FILE, "w") as f:
+        json.dump(data, f)
 
+# ─── Tokenizer (adapted from your PartA implementation) ─────────────────────
 def tokenize_text(text: str) -> list:
+    """Tokenize a raw string (not a file path) into lowercase alphanumeric tokens."""
     tokens = []
     token = []
     for ch in text:
@@ -60,24 +69,70 @@ def compute_word_frequencies(tokens: list) -> dict:
         frequencies[token] = frequencies.get(token, 0) + 1
     return frequencies
 
-def _has_low_info_content(soup, min_words=50) -> bool:
+# ─── Near-Duplicate Detection ────────────────────────────────────────────────
+_seen_fingerprints = set()
+
+def _simhash(tokens: list) -> int:
+    v = [0] * 64
+    for token in tokens:
+        h = int(hashlib.md5(token.encode()).hexdigest(), 16)
+        for i in range(64):
+            v[i] += 1 if (h >> i) & 1 else -1
+    fingerprint = 0
+    for i in range(64):
+        if v[i] > 0:
+            fingerprint |= (1 << i)
+    return fingerprint
+
+def _is_near_duplicate(fingerprint: int, threshold: int = 3) -> bool:
+    """Return True if fingerprint is within `threshold` bits of any seen fingerprint."""
+    for seen in _seen_fingerprints:
+        diff = bin(fingerprint ^ seen).count("1")
+        if diff <= threshold:
+            return True
+    return False
+
+# ─── URL Canonicalization ────────────────────────────────────────────────────
+def _canonicalize(url: str) -> str:
+    url, _ = urldefrag(url)
+    p = urlparse(url)
+    scheme = p.scheme.lower()
+    host   = p.netloc.lower()
+    # remove default ports
+    host = re.sub(r":80$", "", host) if scheme == "http" else re.sub(r":443$", "", host)
+    # strip trailing slash (except root)
+    path = p.path.rstrip("/") or "/"
+    # sort query params for consistency
+    query = urlencode(sorted(parse_qsl(p.query))) if p.query else ""
+    return f"{scheme}://{host}{path}" + (f"?{query}" if query else "")
+
+# ─── Trap / Low-Quality Detection ────────────────────────────────────────────
+def _has_low_info_content(soup, min_words=25) -> bool:
+    """Return True if the page has too little textual content to be worth indexing."""
     text = soup.get_text(separator=" ")
     words = [w for w in tokenize_text(text) if w not in STOP_WORDS]
     return len(words) < min_words
 
 def _is_calendar_trap(url: str) -> bool:
+    """Detect common infinite calendar / date-pagination traps."""
     patterns = [
         r"/calendar/",
         r"\?date=",
         r"\?month=",
         r"[?&](year|month|day)=\d+",
-        r"/\d{4}/\d{2}/\d{2}/",
-        r"/page/\d{3,}",
+        r"/\d{4}/\d{2}/\d{2}/",        # /yyyy/mm/dd/ paths
+        r"/page/\d+",                    # pagination (any depth)
+        r"[?&](ical|outlook-ical)=",     # iCal / Outlook export URLs
+        r"/(day|week|month)/\d",        # date-based views
+        r"[?&]tribe-bar-date=",         # The Events Calendar plugin
+        r"[?&]tribe_events_cat=",       # Events Calendar category
     ]
     return any(re.search(p, url, re.IGNORECASE) for p in patterns)
 
 def _has_repeated_path_segments(parsed) -> bool:
+    """Detect URLs whose path has repeating directory segments (crawler traps)."""
     segments = [s for s in parsed.path.split("/") if s]
+    # If any segment appears more than twice in the path, it's likely a trap
     seen = defaultdict(int)
     for seg in segments:
         seen[seg] += 1
@@ -86,70 +141,112 @@ def _has_repeated_path_segments(parsed) -> bool:
     return False
 
 def _has_session_id(url: str) -> bool:
+    """Detect URLs with common session ID parameters that could lead to infinite loops."""
     session_patterns = [
         r"[?&](jsessionid|sessionid|sid|session|php_sessid|aspsessionid)=",
-        r"[?&](id|uid)=[a-f0-9]{32,}",
+        r"[?&](id|uid)=[a-f0-9]{32,}",  # long hex IDs (likely session tokens)
     ]
     return any(re.search(p, url, re.IGNORECASE) for p in session_patterns)
 
 def _has_excessive_path_depth(parsed) -> bool:
+    """Detect URLs with unusually deep path hierarchies (potential infinite crawler traps)."""
     segments = [s for s in parsed.path.split("/") if s]
+    # Reject if path is deeper than 12 levels
     return len(segments) > 12
 
 def _has_too_many_params(parsed) -> bool:
     if not parsed.query:
         return False
-    params = parsed.query.split("&")
-    return len(params) > 8
+    params = unquote(parsed.query).split("&")
+    return len(params) > 4
 
 def _check_content_length(resp) -> bool:
+    """Check for content-length mismatches that indicate truncated responses."""
     if not resp.raw_response or not hasattr(resp.raw_response, 'headers'):
-        return True
+        return True  # Assume valid if we can't check
+    
     content_length_header = resp.raw_response.headers.get('content-length', '')
     if not content_length_header:
-        return True
+        return True  # No header, assume valid
+    
     try:
         declared = int(content_length_header)
         actual = len(resp.raw_response.content) if resp.raw_response.content else 0
+        # If actual is significantly less than declared, it may be truncated
         if actual > 0 and declared > 0 and actual < (declared * 0.8):
-            return False
+            return False  # Content truncation detected
     except (ValueError, TypeError):
-        return True
+        return True  # Invalid header, assume valid
+    
     return True
 
+# ─── Core Scraper ────────────────────────────────────────────────────────────
 def scraper(url, resp):
     links = extract_next_links(url, resp)
     return [link for link in links if is_valid(link)]
 
+
 def extract_next_links(url, resp):
+    # ── Bail out on bad responses ──────────────────────────────────────────
     if resp.status != 200 or resp.raw_response is None:
         return []
+
+    content_type = resp.raw_response.headers.get("Content-Type", "")
+    if "text/html" not in content_type:
+        return []
+
     content = resp.raw_response.content
-    if not content or len(content) < 100:
+    if not content or len(content) < 100:          # empty / near-empty page
         return []
-    if len(content) > 10 * 1024 * 1024:
+    if len(content) > 10 * 1024 * 1024:            # skip files > 10 MB
         return []
+
+    # ── Check for content-length mismatches (truncated responses) ──────────
     if not _check_content_length(resp):
         return []
+
+    # ── Parse HTML ────────────────────────────────────────────────────────
     try:
         soup = BeautifulSoup(content, "lxml")
     except Exception:
-        return []
-    if _has_low_info_content(soup):
-        return []
-    canonical_url, _ = urldefrag(url)
-    stats = _load_stats()
-    stats["unique_pages"].add(canonical_url)
+        try:
+            soup = BeautifulSoup(content, "html.parser")
+        except Exception:
+            return []
+
+    # ── Canonicalize URL ──────────────────────────────────────────────────
+    canonical_url = _canonicalize(url)
+
+    # ── Near-duplicate detection via SimHash ──────────────────────────────
     raw_text = soup.get_text(separator=" ")
     tokens   = tokenize_text(raw_text)
+    fingerprint = _simhash(tokens)
+    is_duplicate = _is_near_duplicate(fingerprint)
+    _seen_fingerprints.add(fingerprint)
+
+    # ── Skip low-info and duplicate pages entirely ────────────────────────
+    if is_duplicate or _has_low_info_content(soup):
+        return []
+
+    # ── Update persistent stats ───────────────────────────────────────────
+    stats = _load_stats()
+
+    # 1. Unique pages
+    stats["unique_pages"].add(canonical_url)
+
+    # 2. Word frequencies (for top-50 report)
     for token in tokens:
         if token not in STOP_WORDS and len(token) > 1:
             stats["word_frequencies"][token] = (
                 stats["word_frequencies"].get(token, 0) + 1
             )
+
+    # 3. Longest page
     word_count = len(tokens)
     if word_count > stats["longest_page"]["count"]:
         stats["longest_page"] = {"url": canonical_url, "count": word_count}
+
+    # 4. Subdomains  (only *.uci.edu)
     parsed_url = urlparse(canonical_url)
     hostname   = parsed_url.netloc.lower()
     if hostname.endswith(".uci.edu"):
@@ -158,27 +255,41 @@ def extract_next_links(url, resp):
         if not isinstance(stats["subdomains"][hostname], set):
             stats["subdomains"][hostname] = set(stats["subdomains"][hostname])
         stats["subdomains"][hostname].add(canonical_url)
+
     _save_stats(stats)
+
+    # ── Extract outbound links ────────────────────────────────────────────
     extracted = []
     for tag in soup.find_all("a", href=True):
         href = tag["href"].strip()
         if not href or href.startswith("mailto:") or href.startswith("javascript:"):
             continue
+
         absolute = urljoin(resp.raw_response.url, href)
-        absolute, _ = urldefrag(absolute)
+        absolute = _canonicalize(absolute)
         if absolute:
             extracted.append(absolute)
+
     return extracted
 
+
+# ─── URL Validator ───────────────────────────────────────────────────────────
 def is_valid(url):
     try:
         parsed = urlparse(url)
+
+        # Must be http or https
         if parsed.scheme not in {"http", "https"}:
             return False
+
+        # Block excessively long URLs (trap indicator)
+        if len(url) > 200:
+            return False
+
         hostname = parsed.netloc.lower()
-        path = parsed.path.lower()
-        query = parsed.query.lower()
-        query_keys = {part.split("=", 1)[0].lower() for part in parsed.query.lower().split("&") if part}
+        query    = unquote(parsed.query)
+
+        # ── Domain whitelist ──────────────────────────────────────────────
         allowed = (
             re.search(r"(^|\.)ics\.uci\.edu$",         hostname) or
             re.search(r"(^|\.)cs\.uci\.edu$",           hostname) or
@@ -189,59 +300,94 @@ def is_valid(url):
         )
         if not allowed:
             return False
-        # Blocking common event traps
-        event_trap_patterns = [
-                r"/events?/list/",
-                r"/events?/calendar/",
-                r"/events?/category/",
-                r"/events?/tag/",
-                r"/events?/page/\d+",
-                r"/events?/day/",
-                r"/events?/month/",
-                r"/events?/week/",
-                r"/events?/archive",
-                ]
-        if any(re.search(p, parsed.path.lower()) for p in event_trap_patterns):
+
+        # ── Block all query params on .php paths (dynamic trap pages) ────
+        if parsed.path.lower().endswith(".php") and query:
             return False
-        # Blocking event query traps
-        event_query_keys = {
-                "tribe_event_display",
-                "tribe_paged",
-                "tribe__ecp_custom_49",
-                "eventdate",
-                "ical",
-                }
-        if "event" in path and (query_keys & event_query_keys):
+
+        # ── Block URLs with semicolons in query (Apache sort, etc.) ──────
+        if ";" in query:
             return False
-        # Repeating Parameters
-        params = parsed.query.split("&")
-        param_names = [p.split("=")[0] for p in params if "=" in p]
-        if len(param_names) != len(set(param_names)):
+
+        # ── UI-state / dashboard parameter traps ─────────────────────────
+        if query and any(p in query for p in (
+            "filter[", "action=", "skin=", "lang=",
+            "from=now", "to=now", "refresh=", "orgId=", "var-",
+            "do=", "idx=", "tab_files=", "tab_details=", "image=",
+            "format=",
+        )):
             return False
-        if "status" in path and "action=update" in query:
+
+        # ── Block Trac timeline (infinite timestamp-based pagination) ─────
+        if re.search(r"(^|&)from=\d{4}-\d{2}-\d{2}T", query):
             return False
-        if len(url) > 200:
+        if "/timeline" in parsed.path and parsed.query:
             return False
-        # Wiki Trap Avoiding
-        if hostname in {"wiki.ics.uci.edu", "swiki.ics.uci.edu"}:
-            blocked_query_keys = {
-                "do",
-                "idx",
-                "image",
-                "ns",
-                "tab_files",
-                "tab_details",
-                "sectok",
-            }
-            if query_keys & blocked_query_keys:
-                return False 
-            # Avoiding deep wiki namespaces
-            if path.count(":") > 3:
-                return False
-        if len(query_keys) > 5:
+
+        # ── Event list/export trap URLs ───────────────────────────────────
+        if "eventDisplay=" in query:
             return False
-        if not allowed:
+        if "ical" in query or "outlook-ical" in query:
             return False
+        if "/events/" in parsed.path:
+            return False
+
+        # ── Numeric ID enumeration trap ───────────────────────────────────
+        if re.search(r"^id=\d+$", query):
+            return False
+
+        # ── Block non-content subdomains ──────────────────────────────────
+        if re.search(r"(intranet|grafana|observium|kibana|mailman|gitlab)\.ics\.uci\.edu", hostname):
+            return False
+        if "mailman" in hostname or "pipermail" in parsed.path.lower():
+            return False
+
+        # ── Block fano /ca/rules/ enumeration trap ────────────────────────
+        if hostname == "fano.ics.uci.edu" and parsed.path.startswith("/ca/rules"):
+            return False
+
+        # ── Block numeric publication page expansions ─────────────────────
+        if re.search(r"/publications/r\d+[a-z]?\.html?$", parsed.path, re.IGNORECASE):
+            return False
+
+        # ── Block login / auth pages ──────────────────────────────────────
+        if re.search(r"/(login|logout|signin|signout|wp-login|auth|oauth|sso|cas|admin|account|my-account)(\.php)?(/|$|\?)", parsed.path, re.IGNORECASE):
+            return False
+
+        # ── Block wiki.ics.uci.edu entirely when it has query params ────────
+        if hostname == "wiki.ics.uci.edu" and parsed.query:
+            return False
+
+        # ── Block RSS/Atom feed URLs ──────────────────────────────────────
+        if re.search(r"/(feed|rss|atom)(\.xml)?(/|$)", parsed.path, re.IGNORECASE):
+            return False
+
+        # ── Block DokuWiki trap (infinite param combinations) ─────────────
+        if "doku.php" in parsed.path.lower():
+            return False
+
+        # ── Block numeric ID expansion traps (e.g. dtr:105339) ───────────
+        if re.search(r":\d{4,}", parsed.path):
+            return False
+
+        # ── Low-value path patterns ───────────────────────────────────────
+        if re.search(
+            r"/(archive|deprecated|legacy|backup|old|tmp|temp|test|dev|staging|cache|trash|junk)/",
+            parsed.path, re.IGNORECASE
+        ):
+            return False
+
+        # ── Skip old year-based archive paths (pre-2020) ──────────────────
+        if re.search(r"/(200\d|201\d)/", parsed.path):
+            return False
+        # Catch seasonal year paths: spring-05, fall-2007, winter-2016, etc.
+        if re.search(r"/(spring|summer|fall|winter)[-_](9[0-9]|0[0-9]|1[0-9]|200\d|201\d)\b", parsed.path, re.IGNORECASE):
+            return False
+        # Catch reversed seasonal year paths: 05-spring, 2007-fall, 2016-winter, etc.
+        if re.search(r"/(0[0-9]|9[0-9]|1[0-9]|200\d|201\d)[-_](spring|summer|fall|winter)\b", parsed.path, re.IGNORECASE):
+            return False
+
+        # ── Trap detection ────────────────────────────────────────────────
         if _is_calendar_trap(url):
             return False
         if _has_repeated_path_segments(parsed):
@@ -252,32 +398,50 @@ def is_valid(url):
             return False
         if _has_too_many_params(parsed):
             return False
-        if _has_session_id(url):
+
+        # ── Block archive.ics.uci.edu search/filter pages ────────────────
+        if hostname == "archive.ics.uci.edu" and parsed.path.startswith("/datasets") and parsed.query:
             return False
+
+        # ── Block non-HTML file extensions ────────────────────────────────
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
             r"|png|tiff?|mid|mp2|mp3|mp4"
             r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
-            r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
+            r"|ps|eps|tex|ppt|pptx|pps|ppsx|doc|docx|xls|xlsx|names"
             r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
             r"|epub|dll|cnf|tgz|sha1"
             r"|thmx|mso|arff|rtf|jar|csv"
-            r"|rm|smil|wmv|swf|wma|zip|rar|gz)$",
+            r"|rm|smil|wmv|swf|wma|zip|rar|gz"
+            r"|txt|m|mat|r|rdata|rds|sas|sav|spss|sql|db)$",
             parsed.path.lower()
         )
-    except (TypeError, ValueError):
-        print("TypeError/ValueError for", url)
-        raise
 
+    except (TypeError, ValueError):
+        return False
+
+
+# ─── Report Generator ────────────────────────────────────────────────────────
 def generate_report(output_path="report.txt"):
+    """
+    Call this after your crawl completes to produce the written report.
+    Example:  from scraper import generate_report; generate_report()
+    """
     stats = _load_stats()
+
     lines = []
+
+    # Q1 – Unique pages
     lines.append("=" * 60)
     lines.append(f"Q1: Unique pages found: {len(stats['unique_pages'])}")
+
+    # Q2 – Longest page
     lp = stats["longest_page"]
     lines.append("=" * 60)
     lines.append(f"Q2: Longest page: {lp['url']}")
     lines.append(f"    Word count:   {lp['count']}")
+
+    # Q3 – Top 50 words
     lines.append("=" * 60)
     lines.append("Q3: Top 50 most common words (stop words excluded):")
     sorted_words = sorted(
@@ -285,26 +449,19 @@ def generate_report(output_path="report.txt"):
     )[:50]
     for rank, (word, freq) in enumerate(sorted_words, 1):
         lines.append(f"    {rank:>2}. {word:<30} {freq}")
+
+    # Q4 – Subdomains
     lines.append("=" * 60)
     lines.append("Q4: Subdomains in uci.edu (alphabetical):")
     for subdomain in sorted(stats["subdomains"].keys()):
         pages = stats["subdomains"][subdomain]
         count = len(pages) if isinstance(pages, set) else pages
         lines.append(f"    {subdomain}, {count}")
+
     report_text = "\n".join(lines)
     print(report_text)
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(report_text)
-    print(f"\nReport saved to {output_path}")
 
-def _auto_report():
-    print("\nCrawl ended — generating report...")
-    generate_report()
- 
-atexit.register(_auto_report)
- 
-def _signal_handler(sig, frame):
-    sys.exit(0)  # triggers atexit
- 
-signal.signal(signal.SIGINT, _signal_handler)   # Ctrl+C
-signal.signal(signal.SIGTERM, _signal_handler)  # kill / system shutdown
+    print(f"\nReport saved to {output_path}")
