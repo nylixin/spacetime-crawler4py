@@ -1,5 +1,8 @@
 import re
 import shelve
+import atexit
+import signal
+import sys
 from collections import defaultdict
 from urllib.parse import urlparse, urljoin, urldefrag
 from bs4 import BeautifulSoup
@@ -267,7 +270,7 @@ def is_valid(url):
         raise
 
 def generate_report(output_path="report.txt"):
-    stats = _load_stats(
+    stats = _load_stats()
     lines = []
     lines.append("=" * 60)
     lines.append(f"Q1: Unique pages found: {len(stats['unique_pages'])}")
@@ -293,3 +296,15 @@ def generate_report(output_path="report.txt"):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(report_text)
     print(f"\nReport saved to {output_path}")
+
+def _auto_report():
+    print("\nCrawl ended — generating report...")
+    generate_report()
+ 
+atexit.register(_auto_report)
+ 
+def _signal_handler(sig, frame):
+    sys.exit(0)  # triggers atexit
+ 
+signal.signal(signal.SIGINT, _signal_handler)   # Ctrl+C
+signal.signal(signal.SIGTERM, _signal_handler)  # kill / system shutdown
