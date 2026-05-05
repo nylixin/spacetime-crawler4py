@@ -424,11 +424,6 @@ def is_valid(url):
 
 # Report Generator
 def generate_report(output_path="report.txt"):
-    """
-    Call using
-        from scraper import generate_report; generate_report()
-    after crawl is complete. 
-    """
     stats = _load_stats()
 
     lines = []
