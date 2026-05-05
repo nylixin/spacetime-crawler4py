@@ -385,11 +385,7 @@ def is_valid(url):
         # Skipping archival links (<2020)
         if re.search(r"/(200\d|201\d)/", parsed.path):
             return False
-        # Blocking seasonal paths: spring-05, fall-2007, winter-2016, etc.
-        if re.search(r"/(spring|summer|fall|winter)[-_](9[0-9]|0[0-9]|1[0-9]|200\d|201\d)\b", parsed.path, re.IGNORECASE):
-            return False
-        # Blocking seasonal paths reversed: 05-spring, 2007-fall, 2016-winter, etc.
-        if re.search(r"/(0[0-9]|9[0-9]|1[0-9]|200\d|201\d)[-_](spring|summer|fall|winter)\b", parsed.path, re.IGNORECASE):
+        if re.search(r'\b\d{4}-(spring|summer|fall|winter)\b', parsed.path, re.IGNORECASE):
             return False
 
         # Detecting traps
