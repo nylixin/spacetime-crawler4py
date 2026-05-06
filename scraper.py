@@ -42,15 +42,21 @@ def _save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(data, f)
 
-# Detecting near duplicates
+# Detecting near duplicates using simhash
 _seen_fingerprints = set()
 
+# Simhash function
 def _simhash(tokens: list) -> int:
+    # create a vector (list) of length 64 with all 0s (represents 64 bits) 
     v = [0] * 64
     for token in tokens:
+        # first weight the token and then hash the token
         h = int(hashlib.md5(token.encode()).hexdigest(), 16)
+        # then for each place in the 64 bits (v), look if the hash value is 1, subtract otherwise 
         for i in range(64):
             v[i] += 1 if (h >> i) & 1 else -1
+    # generate the fingerprint by setting the ith bit to 1 if the ith component of v is pos,
+    # 0 otherwise 
     fingerprint = 0
     for i in range(64):
         if v[i] > 0:
