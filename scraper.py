@@ -262,15 +262,18 @@ def extract_next_links(url, resp):
 
     _save_stats(stats)
 
-    # Extracting Outbound Links
     extracted = []
     for tag in soup.find_all("a", href=True):
+        # Removing whitespace from href attr
         href = tag["href"].strip()
+        # Skipping empty, email links and JS actions
         if not href or href.startswith("mailto:") or href.startswith("javascript:"):
             continue
 
+        # Converting relative links to absolute URLS, then making sure that it is normalized to get rid of duplicated fragment links
         absolute = urljoin(resp.raw_response.url, href)
         absolute = _canonicalize(absolute)
+        # Keep canonicalized valid links
         if absolute:
             extracted.append(absolute)
 
