@@ -6,10 +6,12 @@ from collections import defaultdict
 from urllib.parse import urlparse, urljoin, urldefrag, urlencode, parse_qsl, unquote
 from bs4 import BeautifulSoup
 
-# constant
+# Dumps the stats that we are looking for into a json file so that it can be accessed later for 
+# making our report. We are saving the number of unique page, longest page, list of all domains/subdomains 
+# and the top 50 common words (ignoring stop words) 
 STATS_FILE = "crawler_stats.json"
 
-# Filtering out stop words
+# Stop words that we are filtering out for. Hard coded for preventing bugs
 STOP_WORDS = {
     "a", "an", "and", "are", "as", "at", "be", "been", "but", "by",
     "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his",
@@ -23,6 +25,7 @@ STOP_WORDS = {
     "could", "would", "should", "may", "can", "might", "must", "shall"
 }
 
+# load the stats from STATS_FILE that we have been collecting and return it as a dict
 def _load_stats():
     if not os.path.exists(STATS_FILE):
         return {
