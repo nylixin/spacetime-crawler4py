@@ -31,6 +31,7 @@ def _load_stats():
     data["subdomains"]   = {k: set(v) for k, v in data["subdomains"].items()}
     return data
 
+# Save stats by unique pages, word frequency, longest page, and subdomains in STATS_FILE
 def _save_stats(stats):
     data = {
         "unique_pages":     list(stats["unique_pages"]),
