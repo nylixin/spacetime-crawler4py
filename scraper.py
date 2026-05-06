@@ -12,19 +12,9 @@ from bs4 import BeautifulSoup
 # and the top 50 common words (ignoring stop words) 
 STATS_FILE = "crawler_stats.json"
 
-# Stop words that we are filtering out for. Hard coded for preventing bugs
-STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by",
-    "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his",
-    "how", "i", "if", "in", "into", "is", "it", "its", "just", "me", "might",
-    "my", "myself", "no", "nor", "not", "of", "on", "or", "our", "ours",
-    "ourselves", "out", "over", "own", "so", "some", "such", "than", "that",
-    "the", "their", "theirs", "them", "themselves", "then", "there", "these",
-    "they", "this", "those", "to", "too", "under", "until", "up", "was", "we",
-    "were", "what", "which", "while", "who", "whom", "why", "with", "you",
-    "your", "yours", "yourself", "yourselves", "is", "it", "will", "should",
-    "could", "would", "should", "may", "can", "might", "must", "shall"
-}
+# Stop words that we are filtering out for. Reads from stopWords in the same directory
+with open("stopWords.txt") as f:
+    STOP_WORDS = set(f.read().split())
 
 # load the stats from STATS_FILE that we have been collecting and return it as a dict
 def _load_stats():
@@ -68,10 +58,14 @@ def _simhash(tokens: list) -> int:
 
 def _is_near_duplicate(fingerprint: int, threshold: int = 3) -> bool:
     """Return True if fingerprint is within `threshold` bits of any seen fingerprint."""
+    # Looping through all seen fingerprints
     for seen in _seen_fingerprints:
+        # Grabbing binary token count for comparison to other fingerprint 
         diff = bin(fingerprint ^ seen).count("1")
+        # If the difference is less than the threshold we can keep the fingerprint
         if diff <= threshold:
             return True
+    # Otherwise return false
     return False
 
 # URL canonicalization for Defragmenting 
