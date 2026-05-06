@@ -46,7 +46,7 @@ def _save_stats(stats):
 _seen_fingerprints = set()
 
 # Simhash function
-def _simhash(tokens: list) -> int:
+def _simhash(tokens: list):
     # create a vector (list) of length 64 with all 0s (represents 64 bits) 
     v = [0] * 64
     for token in tokens:
@@ -63,7 +63,7 @@ def _simhash(tokens: list) -> int:
             fingerprint |= (1 << i)
     return fingerprint
 
-def _is_near_duplicate(fingerprint: int, threshold: int = 3) -> bool:
+def _is_near_duplicate(fingerprint: int, threshold: int = 3):
     """Return True if fingerprint is within `threshold` bits of any seen fingerprint."""
     # Looping through all seen fingerprints
     for seen in _seen_fingerprints:
@@ -76,7 +76,7 @@ def _is_near_duplicate(fingerprint: int, threshold: int = 3) -> bool:
     return False
 
 # URL canonicalization for Defragmenting 
-def _canonicalize(url: str) -> str:
+def _canonicalize(url: str):
     url, _ = urldefrag(url)
     p = urlparse(url)
     scheme = p.scheme.lower()
@@ -91,13 +91,13 @@ def _canonicalize(url: str) -> str:
 
 # Trap and Low Info Detection
 # Calendar, Repeating Paths, Session ID Identifiers, Path Depth, Parameter Limiter, Content Length, 
-def _has_low_info_content(soup, min_words=25) -> bool:
+def _has_low_info_content(soup, min_words=25):
     """Return True if the page has too little textual content to be worth indexing."""
     text = soup.get_text(separator=" ")
     words = [w for w in tokenize_text(text) if w not in STOP_WORDS]
     return len(words) < min_words
 
-def _is_calendar_trap(url: str) -> bool:
+def _is_calendar_trap(url: str):
     """Detect common infinite calendar / date-pagination traps."""
     patterns = [
         r"/calendar/",
@@ -113,7 +113,7 @@ def _is_calendar_trap(url: str) -> bool:
     ]
     return any(re.search(p, url, re.IGNORECASE) for p in patterns)
 
-def _has_repeated_path_segments(parsed) -> bool:
+def _has_repeated_path_segments(parsed):
     """Detect URLs whose path has repeating directory segments (crawler traps)."""
     segments = [s for s in parsed.path.split("/") if s]
     # If any segment appears more than twice in the path, it's likely a trap
@@ -124,7 +124,7 @@ def _has_repeated_path_segments(parsed) -> bool:
             return True
     return False
 
-def _has_session_id(url: str) -> bool:
+def _has_session_id(url: str):
     """Detect URLs with common session ID parameters that could lead to infinite loops."""
     session_patterns = [
         r"[?&](jsessionid|sessionid|sid|session|php_sessid|aspsessionid)=",
@@ -132,19 +132,19 @@ def _has_session_id(url: str) -> bool:
     ]
     return any(re.search(p, url, re.IGNORECASE) for p in session_patterns)
 
-def _has_excessive_path_depth(parsed) -> bool:
+def _has_excessive_path_depth(parsed):
     """Detect URLs with unusually deep path hierarchies (potential infinite crawler traps)."""
     segments = [s for s in parsed.path.split("/") if s]
     # Reject if path is deeper than 12 levels
     return len(segments) > 12
 
-def _has_too_many_params(parsed) -> bool:
+def _has_too_many_params(parsed):
     if not parsed.query:
         return False
     params = unquote(parsed.query).split("&")
     return len(params) > 4
 
-def _check_content_length(resp) -> bool:
+def _check_content_length(resp):
     """Check for content-length mismatches that indicate truncated responses."""
     if not resp.raw_response or not hasattr(resp.raw_response, 'headers'):
         return True  # Assume valid if we can't check
