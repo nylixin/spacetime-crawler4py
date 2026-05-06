@@ -385,7 +385,13 @@ def is_valid(url):
         # Skipping archival links (<2020)
         if re.search(r"/(200\d|201\d)/", parsed.path):
             return False
+        # Block old course / quarter pages like:
+        # cs122b-2017-winter, cs122b-2017-spring-project3, winter-2016
         if re.search(r'\b\d{4}-(spring|summer|fall|winter)\b', parsed.path, re.IGNORECASE):
+            return False
+        if re.search(r"(19\d{2}|20[01]\d|2020)[-_](spring|summer|fall|winter)", parsed.path, re.IGNORECASE):
+            return False
+        if re.search(r"(spring|summer|fall|winter)[-_](19\d{2}|20[01]\d|2020)", parsed.path, re.IGNORECASE):
             return False
 
         # Detecting traps
