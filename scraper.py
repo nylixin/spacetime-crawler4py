@@ -4,6 +4,7 @@ import os
 import hashlib
 from collections import defaultdict
 from urllib.parse import urlparse, urljoin, urldefrag, urlencode, parse_qsl, unquote
+from tokenizer import tokenize_text
 from bs4 import BeautifulSoup
 
 # Dumps the stats that we are looking for into a json file so that it can be accessed later for 
@@ -49,28 +50,6 @@ def _save_stats(stats):
     }
     with open(STATS_FILE, "w") as f:
         json.dump(data, f)
-
-# Tokenizer 
-def tokenize_text(text: str) -> list:
-    """Tokenize a raw string (not a file path) into lowercase alphanumeric tokens."""
-    tokens = []
-    token = []
-    for ch in text:
-        if ch.isalnum():
-            token.append(ch.lower())
-        else:
-            if token:
-                tokens.append("".join(token))
-                token = []
-    if token:
-        tokens.append("".join(token))
-    return tokens
-
-def compute_word_frequencies(tokens: list) -> dict:
-    frequencies = {}
-    for token in tokens:
-        frequencies[token] = frequencies.get(token, 0) + 1
-    return frequencies
 
 # Detecting near duplicates
 _seen_fingerprints = set()
@@ -232,7 +211,7 @@ def extract_next_links(url, resp):
     if is_duplicate or _has_low_info_content(soup):
         return []
 
-    # Persistent Stat Updater
+    # Update stats 
     stats = _load_stats()
 
     # 1. Adding Unique Pages
@@ -438,17 +417,17 @@ def generate_report(output_path="report.txt"):
     lines = []
 
     # Q1 – Unique pages
-    lines.append("=" * 60)
+    lines.append("-")
     lines.append(f"Q1: Unique pages found: {len(stats['unique_pages'])}")
 
     # Q2 – Longest page
     lp = stats["longest_page"]
-    lines.append("=" * 60)
+    lines.append("-")
     lines.append(f"Q2: Longest page: {lp['url']}")
     lines.append(f"    Word count:   {lp['count']}")
 
     # Q3 – Top 50 words
-    lines.append("=" * 60)
+    lines.append("-")
     lines.append("Q3: Top 50 most common words (stop words excluded):")
     sorted_words = sorted(
         stats["word_frequencies"].items(), key=lambda x: -x[1]
@@ -457,7 +436,7 @@ def generate_report(output_path="report.txt"):
         lines.append(f"    {rank:>2}. {word:<30} {freq}")
 
     # Q4 – Subdomains
-    lines.append("=" * 60)
+    lines.append("-")
     lines.append("Q4: Subdomains in uci.edu (alphabetical):")
     for subdomain in sorted(stats["subdomains"].keys()):
         pages = stats["subdomains"][subdomain]
